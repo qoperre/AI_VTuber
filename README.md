@@ -1,5 +1,5 @@
 # AI-Vtuber
-This code is designed to read chat messages from YouTube and then utilize OpenAI's GPT-3 language model to generate responses. The output from GPT-3 is then read out loud using a TTS (Text-to-Speech) engine provided by ElevenLabs.
+This code is designed to read chat messages from YouTube and then utilize Google's Gemini language model to generate responses. The output from Gemini is then read out loud using a TTS (Text-to-Speech) engine provided by ElevenLabs.
 
 
 
@@ -14,11 +14,11 @@ It also requires [`ffmpeg`](https://ffmpeg.org/) to be installed
 
 # Usage
 
-Edit the variables `EL_key` and `OAI_key` in `config.json`
+Edit the variables `EL_key` and `GEMINI_key` in `config.json`
 
 `EL_key` is the API key for [ElevenLabs](https://beta.elevenlabs.io/). Found in Profile Settings
 
-`OAI_key` is the API key for OpenAI. Found [here](https://platform.openai.com/account/api-keys)
+`GEMINI_key` is the API key for Google's Gemini. Found [here](https://aistudio.google.com/app/apikey)
 
 Then run `run.py`
 
