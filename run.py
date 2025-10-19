@@ -17,7 +17,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 EL_KEY = os.getenv("EL_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
-VOICE_ID = os.getenv("VOICE_ID", "MF3mGyEYCl7XYWbV9V6O")
+VOICE_ID = os.getenv("VOICE_ID", "MF3mGyEYCl7XYWbV9V6O") # 뒤에 굳이 한 번 더 쓰는 이유: .env 파일이 없거나, 해당 키가 빠졌거나, 서버 환경에서 환경변수가 설정되지 않은 경우의 "백업용 기본값"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 GEMINI_PROMPT = os.getenv(
     "GEMINI_PROMPT",
@@ -55,10 +55,10 @@ def el_tts(message):
     play(audio_content)
 
 # === LLM (Gemini) ===
-def llm(message):
+async def llm(message):
     genai.configure(api_key=GEMINI_KEY)
     model = genai.GenerativeModel(GEMINI_MODEL)
-    response = model.generate_content(f"{GEMINI_PROMPT}\n\n#########\n{message}\n#########\n")
+    response = await model.generate_content_async(f"{GEMINI_PROMPT}\n\n#########\n{message}\n#########\n")
     return response.text
 
 # === Discord 봇 ===
@@ -77,10 +77,14 @@ async def on_message(message):
 
     if str(message.channel.id) == str(DISCORD_CHANNEL_ID):
         print(f"\n[{message.author.name}]: {message.content}\n")
-        response = llm(message.content)
+        response = await llm(message.content)
         print(f"Response: {response}")
-        await message.channel.send(response)
-        tts_play(response)
+        
+        # 응답을 2000자 단위로 분할하여 전송
+        for i in range(0, len(response), 2000):
+            await message.channel.send(response[i:i+2000])
+        
+        await asyncio.to_thread(tts_play, response)
 
 if __name__ == "__main__":
     if TTS_TYPE == "pyttsx3":
