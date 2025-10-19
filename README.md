@@ -1,5 +1,5 @@
 # AI-Vtuber
-This code is designed to read chat messages from YouTube and then utilize Google's Gemini language model to generate responses. The output from Gemini is then read out loud using a TTS (Text-to-Speech) engine provided by ElevenLabs.
+This code is designed to read chat messages from Discord and then utilize Google's Gemini language model to generate responses. The output from Gemini is then read out loud using a TTS (Text-to-Speech) engine provided by ElevenLabs.
 
 
 
@@ -14,42 +14,22 @@ It also requires [`ffmpeg`](https://ffmpeg.org/) to be installed
 
 # Usage
 
-Edit the variables `EL_key` and `GEMINI_key` in `config.json`
+Edit the variables `EL_key`, `GEMINI_key`, `discord_token`, and `discord_channel_id` in `config.json`
 
 `EL_key` is the API key for [ElevenLabs](https://beta.elevenlabs.io/). Found in Profile Settings
 
 `GEMINI_key` is the API key for Google's Gemini. Found [here](https://aistudio.google.com/app/apikey)
 
-Then run `run.py`
+`discord_token` is your Discord bot's token.
 
-### Default TTS
+`discord_channel_id` is the ID of the channel you want the bot to read messages from.
+
+Then run `run.py`
 ```
-python run.py -id STREAMID 
-```
-### Elevenlabs TTS
-```
-python run.py -id STREAMID -tts EL 
+python run.py
 ```
 then you're set
-## Notes
-Replace `STREAMID` with the stream's ID that you can find on the Youtube Stream link
 
-You can change the voice by changing `voice` in `config.json`. You can find the ID's [here](https://api.elevenlabs.io/docs) in `Get Voices`
-
-
-
-# Live Demo
-[Livestream 1](https://www.youtube.com/watch?v=rSrkpsWZjyg)
-
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=rSrkpsWZjyg
-" target="_blank"><img src="http://img.youtube.com/vi/rSrkpsWZjyg/0.jpg" 
-alt="" width="240" height="180" border="10" /></a>
-
-[Livestream 2](https://www.youtube.com/watch?v=GB4eJUxxNY4)
-
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=GB4eJUxxNY4
-" target="_blank"><img src="http://img.youtube.com/vi/GB4eJUxxNY4/0.jpg" 
-alt="" width="240" height="180" border="10" /></a>
 
 # Other
 I used [This VTS plugin](https://lualucky.itch.io/vts-desktop-audio-plugin) and [VB Audio cable](https://vb-audio.com/Cable/) to make her mouth move and be able to play music at the same time
