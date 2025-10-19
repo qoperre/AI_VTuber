@@ -1,15 +1,12 @@
-import pytchat
+import discord
 import google.generativeai as genai
 import json
-from pytchat import LiveChat, SpeedCalculator
-import time
+import asyncio
 import requests
 from pydub import AudioSegment
 from pydub.playback import play
 import io
 import pyttsx3
-import sys
-import argparse
 
 def initTTS():
     global engine
@@ -28,10 +25,11 @@ def initVar():
     global EL_key
     global GEMINI_key
     global EL_voice
-    global video_id
     global tts_type
     global GEMINI
     global EL
+    global discord_token
+    global discord_channel_id
 
     try:
         with open("config.json", "r") as json_file:
@@ -49,16 +47,10 @@ def initVar():
         key = data["keys"][0]["EL_key"]
         voice = data["EL_data"][0]["voice"]
 
-    tts_list = ["pyttsx3", "EL"]
+    discord_token = data["keys"][0]["discord_token"]
+    discord_channel_id = data["keys"][0]["discord_channel_id"]
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-id", "--video_id", type=str)
-    parser.add_argument("-tts", "--tts_type", default="pyttsx3", choices=tts_list, type=str)
-
-    args = parser.parse_args()
-
-    video_id = args.video_id
-    tts_type = args.tts_type
+    tts_type = "EL"
 
     if tts_type == "pyttsx3":
         initTTS()
@@ -98,28 +90,22 @@ def EL_TTS(message):
     play(audio_content)
 
 
-def read_chat():
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
 
-    chat = pytchat.create(video_id=video_id)
-    schat = pytchat.create(video_id=video_id, processor = SpeedCalculator(capacity = 20))
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
 
-    while chat.is_alive():
-        for c in chat.get().sync_items():
-            print(f"\n{c.datetime} [{c.author.name}]- {c.message}\n")
-            message = c.message
+    if str(message.channel.id) == discord_channel_id:
+        print(f"\n[{message.author.name}]- {message.content}\n")
 
-            response = llm(message)
-            print(response)
-            Controller_TTS(response)
-
-            if schat.get() >= 20:
-                chat.terminate()
-                schat.terminate()
-                return
-
-
-            time.sleep(1)
-
+        response = llm(message.content)
+        print(response)
+        await message.channel.send(response)
+        Controller_TTS(response)
 
 def llm(message):
 
@@ -134,9 +120,5 @@ def llm(message):
 
 if __name__ == "__main__":
     initVar()
-    print("\n\Running!\n\n")
-
-    while True:
-        read_chat()
-        print("\n\nReset!\n\n")
-        time.sleep(2)
+    print("\n\nRunning!\n\n")
+    client.run(discord_token)

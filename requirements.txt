@@ -1,4 +1,4 @@
-pytchat
+discord.py
 google-genai
 pydub
 pyttsx3
