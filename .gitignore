@@ -1,3 +1,16 @@
-discordbot-test/dico_token.py
-config.json
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# Sensitive files
 .env
+config.json
+discordbot-test/dico_token.py
