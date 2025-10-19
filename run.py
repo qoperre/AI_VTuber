@@ -18,7 +18,7 @@ DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 EL_KEY = os.getenv("EL_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 VOICE_ID = os.getenv("VOICE_ID", "MF3mGyEYCl7XYWbV9V6O") # 뒤에 굳이 한 번 더 쓰는 이유: .env 파일이 없거나, 해당 키가 빠졌거나, 서버 환경에서 환경변수가 설정되지 않은 경우의 "백업용 기본값"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_PROMPT = os.getenv(
     "GEMINI_PROMPT",
     "You are a toxic, entitled, evil female streamer. Respond to the following message in a toxic and rude manner."
