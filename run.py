@@ -77,18 +77,28 @@ async def el_tts_async(message):
         "Content-Type": "application/json"
     }
     data = {
-        "text": message[:2000],  # 혹시 API 길이 제한 대비 안전 버퍼
+        "text": message[:2000],
         "voice_settings": {"stability": 0.75, "similarity_boost": 0.75}
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as resp:
+            print(f"🔎 ElevenLabs status: {resp.status}")
+            content_type = resp.headers.get("Content-Type", "")
+            print(f"🔎 Content-Type: {content_type}")
+
             content = await resp.read()
 
-    # 디코딩/재생도 블로킹 -> 스레드로
+            # 🔍 실패 시 내용 출력
+            if resp.status != 200:
+                print("❌ ElevenLabs API Error:", content.decode(errors="ignore"))
+                return  # 실패한 경우 pydub에 넘기지 않음
+
     def _play_audio():
         audio_content = AudioSegment.from_file(io.BytesIO(content), format="mp3")
         play(audio_content)
+
     await asyncio.to_thread(_play_audio)
+
 
 # === 유틸: 디스코드 전송 길이 제한 처리 ===
 DISCORD_LIMIT = 2000
