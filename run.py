@@ -82,15 +82,15 @@ async def el_tts_async(message):
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as resp:
-            print(f"🔎 ElevenLabs status: {resp.status}")
+            print(f"ElevenLabs status: {resp.status}")
             content_type = resp.headers.get("Content-Type", "")
-            print(f"🔎 Content-Type: {content_type}")
+            print(f"Content-Type: {content_type}")
 
             content = await resp.read()
 
-            # 🔍 실패 시 내용 출력
+            # 실패 시 내용 출력
             if resp.status != 200:
-                print("❌ ElevenLabs API Error:", content.decode(errors="ignore"))
+                print("ElevenLabs API Error:", content.decode(errors="ignore"))
                 return  # 실패한 경우 pydub에 넘기지 않음
 
     def _play_audio():
