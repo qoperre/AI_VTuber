@@ -9,6 +9,11 @@ from pydub.playback import play
 import io
 import pyttsx3
 import aiohttp
+import uuid, tempfile, os
+from discord import FFmpegPCMAudio
+from collections import defaultdict
+guild_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
 
 # .env 로드
 load_dotenv()
@@ -42,26 +47,8 @@ def init_tts():
     engine.setProperty("volume", 1.0)
 
 def tts_play(message):
-    if TTS_TYPE == "pyttsx3":
-        engine.say(message)
-        engine.runAndWait()
-    elif TTS_TYPE == "EL":
-        el_tts(message)
-
-def el_tts(message):
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-    headers = {
-        "accept": "audio/mpeg",
-        "xi-api-key": EL_KEY,
-        "Content-Type": "application/json"
-    }
-    data = {
-        "text": message,
-        "voice_settings": {"stability": 0.75, "similarity_boost": 0.75}
-    }
-    response = requests.post(url, headers=headers, json=data)
-    audio_content = AudioSegment.from_file(io.BytesIO(response.content), format="mp3")
-    play(audio_content)
+    engine.say(message)
+    engine.runAndWait()
 
 async def tts_play_async(message):
     if TTS_TYPE == "pyttsx3":
@@ -82,23 +69,63 @@ async def el_tts_async(message):
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as resp:
-            print(f"ElevenLabs status: {resp.status}")
-            content_type = resp.headers.get("Content-Type", "")
-            print(f"Content-Type: {content_type}")
-
             content = await resp.read()
-
-            # 실패 시 내용 출력
             if resp.status != 200:
-                print("ElevenLabs API Error:", content.decode(errors="ignore"))
-                return  # 실패한 경우 pydub에 넘기지 않음
+                try:
+                    print("ElevenLabs API Error:", content.decode(errors="ignore"))
+                except:
+                    pass
+                return None
+            return content
 
-    def _play_audio():
-        audio_content = AudioSegment.from_file(io.BytesIO(content), format="mp3")
-        play(audio_content)
+    #         print(f"ElevenLabs status: {resp.status}")
+    #         content_type = resp.headers.get("Content-Type", "")
+    #         print(f"Content-Type: {content_type}")
 
-    await asyncio.to_thread(_play_audio)
+    #         content = await resp.read()
 
+    #         # 실패 시 내용 출력
+    #         if resp.status != 200:
+    #             print("ElevenLabs API Error:", content.decode(errors="ignore"))
+    #             return  # 실패한 경우 pydub에 넘기지 않음
+
+    # def _play_audio():
+    #     audio_content = AudioSegment.from_file(io.BytesIO(content), format="mp3")
+    #     play(audio_content)
+
+    # await asyncio.to_thread(_play_audio)
+
+async def play_mp3_bytes_in_discord(vc: discord.VoiceClient, mp3_bytes: bytes):
+    if not mp3_bytes:
+        return
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(mp3_bytes)
+
+        source = FFmpegPCMAudio(
+            executable="ffmpeg",   # PATH 잡혀 있으면 생략 가능
+            source=tmp_path,
+            before_options="-nostdin",
+            options="-vn"
+        )
+
+        # 이미 재생 중이면 겹치지 않게 대기 (간단 큐 동작)
+        while vc.is_playing() or vc.is_paused():
+            await asyncio.sleep(0.2)
+
+        vc.play(source)
+
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except:
+            pass
 
 # === 유틸: 디스코드 전송 길이 제한 처리 ===
 DISCORD_LIMIT = 2000
@@ -148,14 +175,34 @@ def llm_sync(message: str, GEMINI_PROMPT: str) -> str:
     response = MODEL.generate_content(f"{GEMINI_PROMPT + GEMINI_PROMPT_GENERAL}\n\n#########\n{message}\n#########\n")
     return getattr(response, "text", "") or ""
 
+async def get_or_connect_voice_client(message) -> discord.VoiceClient | None:
+    # 유저가 음성 채널에 없는 경우
+    if not message.author.voice or not message.author.voice.channel:
+        await message.channel.send("먼저 음성 채널에 들어와 줘!")
+        return None
+
+    voice_channel = message.author.voice.channel
+    # 이미 길드에 연결된 VC가 있으면 재사용
+    vc = discord.utils.get(client.voice_clients, guild=message.guild)
+
+    if vc and vc.is_connected():
+        if vc.channel != voice_channel:
+            await vc.move_to(voice_channel)  # 다른 채널이면 이동
+        return vc
+
+    # 없으면 새로 연결
+    return await voice_channel.connect()
+
 
 # === Discord 봇 ===
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 client = discord.Client(intents=intents)
 
 @client.event
 async def on_ready():
+    await client.change_presence(activity=discord.Game(name='VSCode로 개발 '))
     print(f"Logged in as {client.user}")
 
 @client.event
@@ -179,8 +226,18 @@ async def on_message(message):
     for part in parts:
         await message.channel.send(part)
 
-    # TTS는 전송 이후 백그라운드로
-    asyncio.create_task(tts_play_async(response))
+    # TTS는 음성 채널로
+    if TTS_TYPE == "EL":
+        lock = guild_locks[message.guild.id]
+        async with lock:
+            vc = await get_or_connect_voice_client(message)
+            if vc:
+                mp3_bytes = await el_tts_async(response)
+                if mp3_bytes:
+                    await play_mp3_bytes_in_discord(vc, mp3_bytes)
+                    # 상주시키고 싶지 않다면 재생 후 퇴장
+                    if vc.is_connected():
+                        await vc.disconnect()
 
 
 

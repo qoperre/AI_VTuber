@@ -83,7 +83,7 @@ Discord 개발자 페이지에서 해당 intent를 활성화하지 않을 것!
 """
 실행 시 오류:
 discord.errors.HTTPException: 400 Bad Request (error code: 50007): Cannot send messages to this user
-------> 해달 유저가 DM을 비활성화했거나, 봇이 유저와 친구가 아니거나, DM을 차단한 유저에게 메세지를 보낼 때
+------> 해당 유저가 DM을 비활성화했거나, 봇이 유저와 친구가 아니거나, DM을 차단한 유저에게 메세지를 보낼 때
 
 해결법: try/except 넣기
     try:
