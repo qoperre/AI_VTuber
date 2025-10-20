@@ -14,3 +14,4 @@ venv/
 .env
 config.json
 discordbot-test/dico_token.py
+vts_token.json
