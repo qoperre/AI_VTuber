@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from dico_token import Token
 
 # client = discord.Client()
 

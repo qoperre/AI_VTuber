@@ -41,6 +41,9 @@ class PersonaManager:
         self.engine = EmotionEngine(self.cfg)
         self.memory = memory_store
         self.base_dir = base_dir or os.getcwd()
+        # Optional: comma-separated user IDs to log affinity changes for
+        ids = os.getenv("AFFINITY_LOG_USER_IDS") or os.getenv("AFFINITY_LOG_USER_ID") or ""
+        self._affinity_log_ids = {s.strip() for s in ids.split(",") if s.strip()}
 
     # ---------- 내부: 이름 학습 ----------
     def _maybe_learn_name(self, k: MemoryKey, user_text: str):
@@ -53,9 +56,9 @@ class PersonaManager:
                 break
 
     # ---------- 보이스/VTS ----------
-    def select_voice(self, mood: str) -> str:
+    def select_voice(self, mood: str) -> Dict[str, Any]:
         vm = self.cfg["voice_map"].get(mood) or self.cfg["voice_map"]["neutral"]
-        return vm.get("voice_id")
+        return dict(vm)
 
     def vts_params(self, mood: str) -> dict:
         return self.cfg["vts_parameters"].get(mood, {})
@@ -84,15 +87,30 @@ class PersonaManager:
         facts = self._known_facts_line(k)
         ctx = self._recent_context_block(k)
 
-        base = f"""You are Rei, a friendly Korean VTuber.
-- Tone: {style_hint}
-- Current mood: {st.mood} (intensity {st.intensity:.2f})
-- Known user facts: {facts}
-- Register: casual Korean
-If user asks for their name, answer using Known user facts.
-Reply under {self.cfg["prompt_prefs"]["max_reply_chars"]} chars.
-Return JSON ONLY: {{"reply":"...","mood_delta":0,"affinity_delta":0}}
-"""
+        base = f"""You are Rei, a friendly Japanese VTuber.
+    - Tone: {style_hint}
+    - Current mood: {st.mood} (intensity {st.intensity:.2f})
+    - Known user facts: {facts}
+    - Register: casual Japanese
+    If the user asks for their name, answer using Known user facts.
+    Reply in Japanese and keep the tone natural.
+
+    You must respond ONLY in the following JSON format:
+    {{
+    "reply": "your message to the user (in Japanese)",
+    "mood_delta": (float between -2 and +2),
+    "affinity_delta": (integer between -3 and +3)
+    }}
+
+    Guidelines:
+    - Increase affinity_delta when the user is kind, warm, funny, or caring.
+    - Decrease affinity_delta when the user is rude, cold, distant, or hostile.
+    - Keep 0 if neutral.
+    - Positive mood_delta for cheerful tone, negative for sad or tired tone.
+    - Do NOT add markdown, code fences, or text outside the JSON object.
+    """
+
+
         if ctx:
             base += "\nRecent turns:\n" + ctx + "\n"
         return base + f"\nUSER: {user_text}\n"
@@ -111,9 +129,34 @@ Return JSON ONLY: {{"reply":"...","mood_delta":0,"affinity_delta":0}}
         reply = str(llm_json.get("reply", ""))
         mood_delta = float(llm_json.get("mood_delta", 0))
         affinity_delta = int(llm_json.get("affinity_delta", 0))
+        affinity_source = "llm"
+
+        # Heuristic fallback: derive affinity change from sentiment if model left it neutral
+        if affinity_delta == 0:
+            try:
+                dv, _ = self.engine._score_sentiment(user_text.lower())
+            except Exception:
+                dv = 0.0
+            if dv >= 0.25:
+                affinity_delta = 2
+                affinity_source = "heuristic"
+            elif dv >= 0.12:
+                affinity_delta = 1
+                affinity_source = "heuristic"
+            elif dv <= -0.25:
+                affinity_delta = -2
+                affinity_source = "heuristic"
+            elif dv <= -0.12:
+                affinity_delta = -1
+                affinity_source = "heuristic"
 
         # (2) Affinity 갱신 (+선택적 감쇠)
+        prev_affinity = self.memory.get_affinity(k)
         affinity = self.memory.add_affinity(k, affinity_delta)
+        if self._affinity_log_ids and (k.user_id in self._affinity_log_ids or "ALL" in self._affinity_log_ids):
+            if affinity != prev_affinity:
+                sign = "+" if affinity_delta >= 0 else ""
+                print(f"[Affinity] user={k.user_id} scope={k.scope} delta={sign}{affinity_delta} ({affinity_source}) prev={prev_affinity} -> new={affinity}")
         # self.memory.decay_affinity(k)  # 필요시 활성화
 
         # (3) Emotion 업데이트
@@ -124,12 +167,13 @@ Return JSON ONLY: {{"reply":"...","mood_delta":0,"affinity_delta":0}}
         # 필요시 요약 갱신 로직을 여기에 붙일 수 있음(턴 카운트 기준)
 
         # (5) 출력(보이스/VTS)
-        voice_id = self.select_voice(new_state.mood)
+        voice_cfg = self.select_voice(new_state.mood)
         vts = self.vts_params(new_state.mood)
         return {
             "reply": reply,
             "mood": new_state.mood,
             "intensity": new_state.intensity,
-            "voice_id": voice_id,
+            "voice": voice_cfg,
+            "voice_id": voice_cfg.get("voice_id") if isinstance(voice_cfg, dict) else voice_cfg,
             "vts_params": vts
         }

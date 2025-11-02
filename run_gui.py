@@ -7,13 +7,18 @@ from tkinter import ttk
 process_is_running = False
 process_thread = None
 
-def run_process(tts_type: str, line_callback: callable = None):
+
+def run_process(voice_mode: str, line_callback: callable = None):
     def _run_process():
         global process_is_running
         process_is_running = True
         try:
             curr_env = os.environ.copy()
-            curr_env["TTS_TYPE"] = tts_type
+            curr_env["TTS_PROVIDER"] = "MELO"
+            if voice_mode == "MeloTTS (Japanese - Nanami)":
+                curr_env["MELO_TTS_SPEAKER"] = "ja-JP-NanamiNeural"
+            elif voice_mode == "MeloTTS (Japanese - Aoi)":
+                curr_env["MELO_TTS_SPEAKER"] = "ja-JP-AoiNeural"
             proc = subprocess.Popen(
                 ["python", "run.py"],
                 stdout=subprocess.PIPE,
@@ -58,16 +63,24 @@ class RunGUI:
         frame = ttk.Frame(root)
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        tts_label = ttk.Label(frame, text="TTS Type:")
-        tts_label.grid(row=0, column=0, padx=5, pady=5)
-        tts_dropdown = ttk.Combobox(frame, values=["pyttsx3", "EL"])
-        tts_dropdown.current(1)
-        tts_dropdown.grid(row=0, column=1, padx=5, pady=5)
+        voice_label = ttk.Label(frame, text="Voice Model:")
+        voice_label.grid(row=0, column=0, padx=5, pady=5)
+        voice_options = [
+            "MeloTTS (Japanese - Nanami)",
+            "MeloTTS (Japanese - Aoi)",
+        ]
+        voice_dropdown = ttk.Combobox(frame, values=voice_options, state="readonly")
+        voice_dropdown.current(0)
+        voice_dropdown.grid(row=0, column=1, padx=5, pady=5)
 
         console = tk.Text(frame, height=10, width=50)
         console.grid(row=1, column=0, columnspan=2, padx=5, pady=10)
 
-        run_btn = ttk.Button(frame, text="Run", command=lambda: run_process(tts_dropdown.get(), lambda l: console.insert(tk.END, l)))
+        run_btn = ttk.Button(
+            frame,
+            text="Run",
+            command=lambda: run_process(voice_dropdown.get(), lambda l: console.insert(tk.END, l))
+        )
         run_btn.grid(row=2, column=0, padx=5, pady=5)
 
         stop_btn = ttk.Button(frame, text="Stop", command=stop_process)

@@ -1,7 +1,12 @@
-discord.py
+discord.py[voice]
 google-genai
 pydub
 pyttsx3
 simpleaudio
 pyaudio
 ffmpeg
+PyNaCl
+openai-whisper
+torch>=2.1.0
+melotts
+numpy

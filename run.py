@@ -6,14 +6,35 @@ import asyncio
 import tempfile
 import uuid
 from collections import defaultdict
-from discord import FFmpegOpusAudio
+from typing import Any, Dict, Optional, Tuple
+from io import BytesIO
+from discord import FFmpegPCMAudio
+import discord.abc
 
 from dotenv import load_dotenv
 import discord
-import aiohttp
 import websockets
 import google.generativeai as genai
 import time
+import wave
+import numpy as np
+try:
+    import whisper  # type: ignore
+except Exception:
+    whisper = None  # type: ignore
+try:
+    from melo.api import TTS as MeloTTS  # type: ignore
+except Exception:
+    MeloTTS = None  # type: ignore
+try:
+    import torch  # type: ignore
+except Exception:
+    torch = None  # type: ignore
+
+try:
+    import discord.sinks as discord_sinks  # type: ignore
+except Exception:
+    discord_sinks = None  # type: ignore
 
 # =========================
 # 경로/환경
@@ -23,11 +44,28 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID  = os.getenv("DISCORD_CHANNEL_ID")  # 텍스트 채널 ID
-EL_KEY              = os.getenv("EL_KEY")
 GEMINI_KEY          = os.getenv("GEMINI_KEY")
 GEMINI_MODEL        = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-VOICE_ID_FALLBACK   = os.getenv("VOICE_ID", "MF3mGyEYCl7XYWbV9V6O")
 FFMPEG_PATH         = os.getenv("FFMPEG_PATH", "ffmpeg")
+
+VOICE_LISTEN_ENABLED      = os.getenv("VOICE_LISTEN_ENABLED", "true").lower() == "true"
+VOICE_LISTEN_WINDOW_SEC   = float(os.getenv("VOICE_LISTEN_WINDOW_SEC", "4.0"))
+VOICE_TRANSCRIPT_MIN_CHARS= int(os.getenv("VOICE_TRANSCRIPT_MIN_CHARS", "4"))
+VOICE_TRANSCRIPT_MAX_CHARS= int(os.getenv("VOICE_TRANSCRIPT_MAX_CHARS", "200"))
+VOICE_PLAYBACK_VOLUME     = float(os.getenv("VOICE_PLAYBACK_VOLUME", "1.4"))
+
+# MeloTTS (Japanese TTS) + Whisper STT defaults
+TTS_PROVIDER          = os.getenv("TTS_PROVIDER", "MELO").upper()  # MELO or GEMINI
+MELO_TTS_LANGUAGE     = os.getenv("MELO_TTS_LANGUAGE", "JP")
+MELO_TTS_SPEAKER      = os.getenv("MELO_TTS_SPEAKER", "ja-JP-NanamiNeural")
+MELO_TTS_DEVICE       = os.getenv("MELO_TTS_DEVICE", "auto")
+MELO_TTS_AUDIO_FORMAT = os.getenv("MELO_TTS_AUDIO_FORMAT", "audio/wav")
+
+STT_PROVIDER          = os.getenv("STT_PROVIDER", "WHISPER").upper()
+WHISPER_MODEL         = os.getenv("WHISPER_MODEL", "medium")
+WHISPER_DEVICE        = os.getenv("WHISPER_DEVICE", "auto")
+WHISPER_LANGUAGE      = os.getenv("WHISPER_LANGUAGE", "ko")
+WHISPER_COMPUTE_TYPE  = os.getenv("WHISPER_COMPUTE_TYPE", "auto")
 
 # VTS
 VTS_URL           = os.getenv("VTS_URL", "ws://localhost:8001")
@@ -58,6 +96,16 @@ except ModuleNotFoundError:
 # =========================
 genai.configure(api_key=GEMINI_KEY)
 MODEL = genai.GenerativeModel(GEMINI_MODEL)
+
+_whisper_model: Optional[Any] = None
+_whisper_model_lock = asyncio.Lock()
+_melo_tts_model: Optional[Any] = None
+_melo_tts_lock = asyncio.Lock()
+
+VOICE_RECEIVE_SUPPORTED = bool(discord_sinks) and hasattr(discord.VoiceClient, "start_recording")
+_voice_receive_warned = False
+voice_listener_tasks: dict[int, asyncio.Task] = {}
+voice_listener_channels: dict[int, discord.TextChannel] = {}
 
 def _extract_first_json(text: str):
     """
@@ -244,73 +292,620 @@ async def simulate_mouth(ws, duration=3.5):
         await asyncio.sleep(0.1)
     await vts_set_parameter(ws, "MouthOpen", 0.0)
 
+
 # =========================
-# ElevenLabs TTS (reply만 재생)
+# Google Cloud / Gemini TTS
 # =========================
 async def ensure_bot_voice_flags(vc: discord.VoiceClient):
     try:
         me = vc.guild.me  # discord.Member
         vs = me.voice
         if vs and (vs.self_deaf or vs.self_mute):
-            # 권한 없으면 무시됨
             await me.edit(deafen=False, mute=False)
     except Exception as e:
-        print(f"봇 음소거/데프 해제 실패(무시 가능): {e}")
+        print(f"Voice state adjustment failed (ignored): {e}")
 
-async def el_tts_async(message, voice_id: str):
-    vid = voice_id if voice_id and "<" not in voice_id and ">" not in voice_id else VOICE_ID_FALLBACK
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{vid}"
-    headers = {"accept": "audio/mpeg", "xi-api-key": EL_KEY, "Content-Type": "application/json"}
-    data = {"text": str(message)[:2000], "voice_settings": {"stability": 0.75, "similarity_boost": 0.75}}
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=data) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                print(f"ElevenLabs API Error [{resp.status}]: {body}")
+def _normalize_voice_config(voice_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    speaker = str(
+        voice_cfg.get("voice_name")
+        or voice_cfg.get("voice_id")
+        or MELO_TTS_SPEAKER
+        or ""
+    ).strip()
+    if not speaker:
+        speaker = MELO_TTS_SPEAKER
+
+    language_code = voice_cfg.get("language_code") or MELO_TTS_LANGUAGE or "JP"
+    language_code = str(language_code).strip()
+
+    speaking_rate = float(voice_cfg.get("speaking_rate", 1.0))
+    pitch = float(voice_cfg.get("pitch", 0.0))
+
+    return {
+        "speaker": speaker,
+        "language_code": language_code,
+        "speaking_rate": speaking_rate,
+        "pitch": pitch,
+        "raw": voice_cfg,
+    }
+
+
+def _resolve_speaker_id(model: Any, speaker: Any) -> Any:
+    if isinstance(speaker, (int, float)):
+        return int(speaker)
+    if isinstance(speaker, str):
+        s = speaker.strip()
+        if s.isdigit():
+            return int(s)
+        slug = re.sub(r"[^a-z0-9]", "", s.lower())
+        candidate = None
+        spk_map = None
+        hps = getattr(model, "hps", None)
+        data = getattr(hps, "data", None)
+        if isinstance(data, dict):
+            spk_map = data.get("spk2id")
+        elif hasattr(data, "spk2id"):
+            spk_map = getattr(data, "spk2id")
+        if isinstance(spk_map, dict):
+            for key, val in spk_map.items():
+                key_slug = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if not key_slug:
+                    continue
+                if slug == key_slug or slug in key_slug or key_slug in slug:
+                    candidate = val
+                    break
+            if candidate is not None:
+                if isinstance(candidate, (int, float)):
+                    return int(candidate)
+                if isinstance(candidate, str) and candidate.isdigit():
+                    return int(candidate)
+        return 0
+    return 0
+
+
+def _resolve_device(preferred: str) -> str:
+    pref = (preferred or "").lower()
+    if pref in ("", "auto"):
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+    return preferred
+
+
+async def _ensure_melo_model(language_code: str):
+    global _melo_tts_model
+    if _melo_tts_model is not None:
+        return _melo_tts_model
+    async with _melo_tts_lock:
+        if _melo_tts_model is None:
+            def _load():
+                if MeloTTS is None:
+                    raise RuntimeError("MeloTTS library not installed. Run `pip install melotts`.")
+                device = _resolve_device(MELO_TTS_DEVICE)
+                lang = (language_code or MELO_TTS_LANGUAGE or "JP").upper()
+                return MeloTTS(language=lang, device=device)
+            loop = asyncio.get_running_loop()
+            _melo_tts_model = await loop.run_in_executor(None, _load)
+    return _melo_tts_model
+
+
+async def melo_tts_async(text: str, voice_cfg: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+    info = _normalize_voice_config(voice_cfg)
+    try:
+        model = await _ensure_melo_model(info["language_code"])
+    except Exception as e:
+        print(f"MeloTTS init failed: {e}")
+        return None
+
+    speaker_raw = info.get("speaker") or MELO_TTS_SPEAKER
+    speaker_id = _resolve_speaker_id(model, speaker_raw)
+    text_input = str(text)[:5000]
+    language_hint = info["language_code"] or MELO_TTS_LANGUAGE or "JP"
+    default_sr = getattr(model, "sample_rate", 44100)
+
+    def _generate() -> Optional[bytes]:
+        if MeloTTS is None:
+            raise RuntimeError("MeloTTS library not available")
+
+        sr = default_sr
+        audio_arr: Optional[Any] = None
+
+        if hasattr(model, "tts"):
+            try:
+                result = model.tts(text_input, speaker_id=speaker_id, language=language_hint)  # type: ignore[attr-defined]
+            except TypeError:
+                try:
+                    result = model.tts(text_input, speaker_id=speaker_id)  # type: ignore[attr-defined]
+                except TypeError:
+                    result = model.tts(text_input)  # type: ignore[attr-defined]
+
+            if isinstance(result, (bytes, bytearray)):
+                return bytes(result)
+            if isinstance(result, str):
+                candidate_path = result.strip()
+                if candidate_path and os.path.exists(candidate_path):
+                    with open(candidate_path, "rb") as f:
+                        return f.read()
+                else:
+                    tmp_path = os.path.join(tempfile.gettempdir(), f"melotts_{uuid.uuid4().hex}.wav")
+                    try:
+                        model.tts_to_file(text_input, speaker_id=speaker_id, language=language_hint, audio_path=tmp_path)  # type: ignore[attr-defined]
+                        if os.path.exists(tmp_path):
+                            with open(tmp_path, "rb") as f:
+                                return f.read()
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+
+            if isinstance(result, dict):
+                if "audio" in result:
+                    audio_arr = result.get("audio")
+                if "sample_rate" in result:
+                    try:
+                        sr = int(result.get("sample_rate", sr))
+                    except Exception:
+                        pass
+            elif isinstance(result, tuple) and len(result) >= 2:
+                first, second = result[0], result[1]
+                if isinstance(first, (int, float)):
+                    sr = int(first)
+                    audio_arr = second
+                else:
+                    audio_arr = first
+                    if isinstance(second, (int, float)):
+                        sr = int(second)
+            elif result is not None:
+                audio_arr = result
+
+            if audio_arr is not None:
+                if torch is not None and isinstance(audio_arr, torch.Tensor):
+                    audio_arr = audio_arr.detach().cpu().numpy()
+                elif isinstance(audio_arr, (list, tuple)):
+                    audio_arr = np.asarray(audio_arr)
+                elif not isinstance(audio_arr, np.ndarray):
+                    try:
+                        audio_arr = np.asarray(audio_arr)
+                    except Exception:
+                        audio_arr = None
+
+            if isinstance(audio_arr, np.ndarray):
+                audio_arr = audio_arr.astype(np.float32)
+                if audio_arr.ndim == 1:
+                    audio_arr = audio_arr[:, None]
+                if audio_arr.size > 0 and audio_arr.dtype.kind != 'U':
+                    audio_arr = np.clip(audio_arr, -1.0, 1.0)
+                    pcm16 = (audio_arr * 32767.0).astype(np.int16)
+                    buf = BytesIO()
+                    with wave.open(buf, "wb") as wf:
+                        wf.setnchannels(pcm16.shape[1])
+                        wf.setsampwidth(2)
+                        wf.setframerate(int(sr or default_sr))
+                        wf.writeframes(pcm16.tobytes())
+                    return buf.getvalue()
+
+        tmp_path = os.path.join(tempfile.gettempdir(), f"melotts_{uuid.uuid4().hex}.wav")
+        try:
+            success = False
+            func = getattr(model, "tts_to_file", None)
+            if callable(func):
+                attempts = (
+                    {"speaker_id": speaker_id, "language": language_hint, "audio_path": tmp_path},
+                    {"speaker_id": speaker_id, "audio_path": tmp_path},
+                    {"speaker": speaker_id, "audio_path": tmp_path},
+                    {"speaker_id": speaker_id, "language": language_hint, "output_path": tmp_path},
+                    {"speaker_id": speaker_id, "output_path": tmp_path},
+                    {"speaker_id": speaker_id, "language": language_hint, "output_file": tmp_path},
+                    {"speaker_id": speaker_id, "output_file": tmp_path},
+                )
+                for kwargs in attempts:
+                    try:
+                        func(text_input, **{k: v for k, v in kwargs.items() if v is not None})
+                        success = True
+                        break
+                    except TypeError:
+                        continue
+                    except Exception as e:
+                        print(f"MeloTTS tts_to_file attempt failed: {e}")
+            if not success and hasattr(model, "save_wav"):
+                func = getattr(model, "save_wav")
+                attempts = (
+                    {"path": tmp_path, "speaker_id": speaker_id, "language": language_hint},
+                    {"path": tmp_path, "speaker_id": speaker_id},
+                    {"path": tmp_path, "speaker": speaker_id},
+                )
+                for kwargs in attempts:
+                    try:
+                        func(text_input, **{k: v for k, v in kwargs.items() if v is not None})
+                        success = True
+                        break
+                    except TypeError:
+                        continue
+                    except Exception as e:
+                        print(f"MeloTTS save_wav attempt failed: {e}")
+            if not success:
                 return None
-            mp3 = await resp.read()
-            if not mp3:
-                print("TTS 결과가 비어 있음")
-            return mp3
+            if not os.path.exists(tmp_path):
+                return None
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return None
 
-async def play_mp3_bytes_in_discord(vc: discord.VoiceClient, mp3_bytes: bytes, volume: float = 1.0):
-    if not mp3_bytes:
+    loop = asyncio.get_running_loop()
+    try:
+        audio_bytes = await loop.run_in_executor(None, _generate)
+    except Exception as e:
+        print(f"MeloTTS synthesis failed: {e}")
+        audio_bytes = None
+
+    if not audio_bytes:
+        print("MeloTTS returned empty audio.")
+        return None
+    return audio_bytes, (MELO_TTS_AUDIO_FORMAT or "audio/wav")
+async def synthesize_speech_async(message: str, voice_cfg: Optional[Dict[str, Any]] = None) -> Optional[Tuple[bytes, str]]:
+    text = (message or "").strip()
+    if not text:
+        return None
+    voice_cfg = voice_cfg or {}
+    if TTS_PROVIDER == "MELO":
+        audio = await melo_tts_async(text, voice_cfg)
+        if audio:
+            return audio
+    elif TTS_PROVIDER == "GEMINI":
+        print("Gemini audio provider not implemented; falling back to MeloTTS.")
+        audio = await melo_tts_async(text, voice_cfg)
+        if audio:
+            return audio
+    else:
+        audio = await melo_tts_async(text, voice_cfg)
+        if audio:
+            return audio
+    return None
+
+
+async def _ensure_whisper_model():
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    async with _whisper_model_lock:
+        if _whisper_model is None:
+            def _load():
+                if whisper is None:
+                    raise RuntimeError("openai-whisper is not installed. Run `pip install openai-whisper`.")
+                device = _resolve_device(WHISPER_DEVICE)
+                try:
+                    return whisper.load_model(WHISPER_MODEL, device=device)
+                except TypeError:
+                    model = whisper.load_model(WHISPER_MODEL)
+                    if device != "cpu" and hasattr(model, "to"):
+                        model.to(device)
+                    return model
+            loop = asyncio.get_running_loop()
+            _whisper_model = await loop.run_in_executor(None, _load)
+    return _whisper_model
+
+
+def _whisper_language(code: Optional[str]) -> str:
+    lang = (code or WHISPER_LANGUAGE or "ko").strip()
+    if "-" in lang:
+        lang = lang.split("-")[0]
+    return lang.lower()
+
+
+def _whisper_use_fp16(device: str) -> bool:
+    dev = device.lower()
+    if dev in ("cuda", "gpu"):
+        return torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available()
+    return False
+
+
+async def transcribe_audio_async(audio_bytes: bytes, *, sample_rate: int = 48000, language_code: Optional[str] = None, audio_channel_count: int = 2) -> str:
+    if not audio_bytes:
+        return ""
+
+    if STT_PROVIDER == "WHISPER":
+        try:
+            model = await _ensure_whisper_model()
+        except Exception as e:
+            print(f"Whisper model init failed: {e}")
+        else:
+            tmp_path = os.path.join(tempfile.gettempdir(), f"whisper_{uuid.uuid4().hex}.wav")
+            with open(tmp_path, "wb") as f:
+                f.write(audio_bytes)
+
+            language = _whisper_language(language_code)
+            device = _resolve_device(WHISPER_DEVICE)
+            fp16 = _whisper_use_fp16(device)
+
+            def _transcribe(path: str) -> str:
+                result = model.transcribe(path, language=language, task="transcribe", fp16=fp16)
+                if not result:
+                    return ""
+                return str(result.get("text", "")).strip()
+
+            loop = asyncio.get_running_loop()
+            try:
+                text = await loop.run_in_executor(None, lambda: _transcribe(tmp_path))
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            if text:
+                return text.strip()
+
+    return ""
+
+
+async def process_voice_sink(sink: Any, vc: discord.VoiceClient, text_channel: discord.TextChannel):
+    print(f"[DEBUG] Sink audio_data keys: {list(getattr(sink, 'audio_data', {}).keys())}")
+    
+    guild = vc.guild
+    if not guild:
         return
 
-    tmp_path = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
+    for user_id, audio in getattr(sink, "audio_data", {}).items():
+        if not audio or user_id == getattr(client.user, "id", None):
+            continue
+        member = guild.get_member(user_id)
+        if member is None:
+            continue
+
+        file_obj = getattr(audio, "file", None)
+        if file_obj is None:
+            continue
+        try:
+            file_obj.seek(0)
+        except Exception:
+            pass
+
+        if hasattr(file_obj, "read"):
+            audio_bytes = file_obj.read()
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+        elif hasattr(file_obj, "getvalue"):
+            audio_bytes = file_obj.getvalue()
+        else:
+            continue
+
+        sample_rate = getattr(audio, "sample_rate", 48000) or 48000
+        channels = getattr(audio, "channels", getattr(audio, "channel_count", 2)) or 2
+
+        transcript = await transcribe_audio_async(
+            audio_bytes,
+            sample_rate=int(sample_rate),
+            audio_channel_count=int(channels),
+            language_code=WHISPER_LANGUAGE,
+        )
+
+        if transcript:
+            print(f"[STT DEBUG] Whisper recognized: \"{transcript}\"")
+        else:
+            print("[STT DEBUG] Whisper returned no text")
+
+        if not transcript:
+            continue
+        transcript = transcript.strip()
+        if len(transcript) < VOICE_TRANSCRIPT_MIN_CHARS:
+            continue
+        if len(transcript) > VOICE_TRANSCRIPT_MAX_CHARS:
+            transcript = transcript[:VOICE_TRANSCRIPT_MAX_CHARS].rstrip() + "..."
+
+        await handle_user_input(member, text_channel, transcript, source="voice", announce=True)
+
+
+async def voice_listener_loop(guild_id: int, vc: discord.VoiceClient):
+    global voice_listener_tasks
+    try:
+        while VOICE_LISTEN_ENABLED and VOICE_RECEIVE_SUPPORTED and vc.is_connected():
+            text_channel = voice_listener_channels.get(guild_id)
+            if text_channel is None:
+                await asyncio.sleep(1.0)
+                continue
+
+            if not discord_sinks:
+                break
+
+            sink = discord_sinks.WaveSink()  # type: ignore[attr-defined]
+            finished = asyncio.Event()
+
+            async def _once_done(_sink, *_) -> None:
+                if not finished.is_set():
+                    finished.set()
+
+            try:
+                vc.start_recording(sink, _once_done)
+            except Exception as e:
+                print(f"[VoiceLoop WARN] start_recording failed: {e}")
+                await asyncio.sleep(1.0)
+                continue
+
+            try:
+                await asyncio.sleep(max(1.0, VOICE_LISTEN_WINDOW_SEC))
+            except asyncio.CancelledError:
+                vc.stop_recording()
+                await finished.wait()
+                if hasattr(sink, "cleanup"):
+                    try:
+                        sink.cleanup()
+                    except Exception:
+                        pass
+                raise
+
+            vc.stop_recording()
+            await finished.wait()
+
+            try:
+                await process_voice_sink(sink, vc, text_channel)
+            except Exception as e:
+                print(f"[VoiceLoop WARN] Voice processing error: {e}")
+            finally:
+                if hasattr(sink, "cleanup"):
+                    try:
+                        sink.cleanup()
+                    except Exception as e:
+                        print(f"[VoiceLoop WARN] Sink cleanup skipped: {e}")
+
+    except Exception as loop_error:
+        print(f"[VoiceLoop ERROR] Loop crashed: {loop_error} (will auto-restart)")
+        await asyncio.sleep(1.0)
+        asyncio.create_task(voice_listener_loop(guild_id, vc))  # 🔁 자동 재시작
+    finally:
+        voice_listener_tasks.pop(guild_id, None)
+        voice_listener_channels.pop(guild_id, None)
+
+
+
+async def ensure_voice_listener(vc: discord.VoiceClient, text_channel: discord.TextChannel):
+    global _voice_receive_warned
+    if not VOICE_LISTEN_ENABLED:
+        return
+    if not VOICE_RECEIVE_SUPPORTED:
+        if not _voice_receive_warned:
+            print("Voice receive not supported (discord.sinks missing or outdated discord.py). Voice chat recognition disabled.")
+            _voice_receive_warned = True
+        return
+
+    guild = vc.guild
+    if not guild:
+        return
+    guild_id = guild.id
+    voice_listener_channels[guild_id] = text_channel
+
+    task = voice_listener_tasks.get(guild_id)
+    if task and not task.done():
+        return
+
+    voice_listener_tasks[guild_id] = asyncio.create_task(voice_listener_loop(guild_id, vc))
+
+
+async def handle_user_input(user: discord.abc.User, channel: discord.abc.Messageable, content: str, *, source: str = "text", announce: bool = False):
+    content = (content or "").strip()
+    if not content:
+        return
+
+    display_name = getattr(user, "display_name", getattr(user, "name", "User"))
+    source_tag = "voice" if source.lower() == "voice" else "text"
+    print(f"\n[{display_name} ({source_tag})]: {content}\n")
+
+    if announce:
+        await channel.send(f"🎙️ **{display_name}**: {content}")
+
+    guild = user.guild if isinstance(user, discord.Member) else getattr(channel, "guild", None)
+    guild_id = guild.id if guild else None
+
+    async with channel.typing():
+        loop = asyncio.get_running_loop()
+
+        def _call_llm(prompt: str):
+            return llm_json_sync(prompt)
+
+        result = await loop.run_in_executor(
+            None,
+            persona_manager.step,
+            str(user.id),
+            guild_id,
+            content,
+            _call_llm,
+        )
+        print("[DEBUG llm_json]", result)
+
+
+    response = str(result.get("reply", ""))
+    mood = result.get("mood", "neutral")
+    voice_cfg = result.get("voice") or {}
+    vts_params = result.get("vts_params", {})
+    voice_label = voice_cfg.get("voice_name") or voice_cfg.get("voice_id") or MELO_TTS_SPEAKER
+
+    print(f"[Persona] mood={mood}, voice={voice_label} | reply={response[:80]}...")
+
+    for part in chunk_message(response):
+        await channel.send(part)
+
+    ws = None
+    if VTS_ENABLED:
+        try:
+            ws = await vts_connect_with_token()
+            if ws:
+                await vts_apply_params(ws, vts_params)
+        except Exception as e:
+            print(f"VTS 연결 실패(무시하고 진행): {e}")
+            ws = None
+
+    lock_key = guild.id if guild else 0
+    lock = guild_locks[lock_key]
+    async with lock:
+        vc: Optional[discord.VoiceClient] = None
+        if isinstance(user, discord.Member):
+            vc = await get_or_connect_voice_client(user, channel)
+
+        if vc:
+            audio_payload = await synthesize_speech_async(response, voice_cfg)
+            if audio_payload:
+                audio_bytes, mime_type = audio_payload
+                if ws:
+                    est_duration = max(2.5, len(audio_bytes) / 32000)
+                    asyncio.create_task(simulate_mouth(ws, est_duration))
+                await play_audio_bytes_in_discord(vc, audio_bytes, mime_type, volume=VOICE_PLAYBACK_VOLUME)
+                if isinstance(channel, discord.TextChannel):
+                    await ensure_voice_listener(vc, channel)
+
+
+async def play_audio_bytes_in_discord(vc: discord.VoiceClient, audio_bytes: bytes, mime_type: str = "audio/mpeg", volume: float = 1.0):
+    if not audio_bytes:
+        return
+
+    ext = ".mp3"
+    mt = (mime_type or "").lower()
+    if "wav" in mt:
+        ext = ".wav"
+    elif "ogg" in mt:
+        ext = ".ogg"
+    elif "webm" in mt:
+        ext = ".webm"
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}{ext}")
     with open(tmp_path, "wb") as f:
-        f.write(mp3_bytes)
+        f.write(audio_bytes)
 
     try:
         await ensure_bot_voice_flags(vc)
 
-        # 이전 재생 종료 대기
         while vc.is_playing() or vc.is_paused():
             await asyncio.sleep(0.1)
 
-        # ffmpeg로 mp3 => opus(48kHz, stereo). -filter:a 로 볼륨 가산 가능
-        # volume 인자는 0.0~2.0 정도 권장
-        vol = max(0.0, float(volume))
-        opus_src = FFmpegOpusAudio(
+        ffmpeg_options = '-vn -ac 2 -ar 48000'
+        pcm_source = FFmpegPCMAudio(
             source=tmp_path,
             executable=FFMPEG_PATH,
-            bitrate=128,  # kbps
             before_options="-nostdin",
-            options=f'-vn -ac 2 -ar 48000 -filter:a "volume={vol}"'
+            options=ffmpeg_options,
         )
+        vol = max(0.0, float(volume))
+        audio_source = discord.PCMVolumeTransformer(pcm_source, volume=vol)
 
-        print("음성 재생 시작 (Opus)")
-        vc.play(opus_src)
+        print("Starting audio playback (PCM)")
+        vc.play(audio_source)
 
         while vc.is_playing():
             await asyncio.sleep(0.2)
 
-        print("음성 재생 종료")
+        print("Audio playback finished")
     except FileNotFoundError:
-        print("fmpeg 를 찾지 못했습니다. .env의 FFMPEG_PATH를 절대경로로 지정하거나 ffmpeg를 설치하세요.")
+        print("ffmpeg executable not found. Set FFMPEG_PATH in .env or install ffmpeg.")
     except Exception as e:
-        print(f"음성 재생 오류: {e}")
+        print(f"Audio playback error: {e}")
     finally:
         try:
             os.remove(tmp_path)
@@ -332,80 +927,47 @@ def chunk_message(text: str, limit: int = 1900):
     if buf: chunks.append(''.join(buf))
     return chunks
 
-async def get_or_connect_voice_client(message):
-    if not message.author.voice or not message.author.voice.channel:
-        await message.channel.send("먼저 음성 채널에 들어와 줘!")
+
+async def get_or_connect_voice_client(member: discord.Member, channel: discord.abc.Messageable):
+    if not member.voice or not member.voice.channel:
+        try:
+            await channel.send("Join a voice channel first!")
+        except Exception:
+            pass
         return None
-    voice_channel = message.author.voice.channel
-    vc = discord.utils.get(client.voice_clients, guild=message.guild)
+    voice_channel = member.voice.channel
+    vc = discord.utils.get(client.voice_clients, guild=member.guild)
     if vc and vc.is_connected():
         if vc.channel != voice_channel:
             await vc.move_to(voice_channel)
         return vc
     return await voice_channel.connect()
 
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
-client = discord.Client(intents=intents)
+intents.guilds = True
+intents.members = True
+
+client = discord.Client(intents=intents, voice_receive=True)
+
 
 @client.event
 async def on_ready():
     await client.change_presence(activity=discord.Game(name='AI VTuber (Persona Mode)'))
     print(f"Logged in as {client.user}")
 
+
 @client.event
-async def on_message(message):
+async def on_message(message: discord.Message):
     if message.author == client.user:
         return
     if str(message.channel.id) != str(DISCORD_CHANNEL_ID):
         return
 
-    print(f"\n[{message.author.name}]: {message.content}\n")
-    async with message.channel.typing():
-        loop = asyncio.get_running_loop()
-        def _call_llm(prompt):  # PersonaManager가 기대하는 콜백
-            return llm_json_sync(prompt)
-        guild_id = message.guild.id if message.guild else None
-        result = await loop.run_in_executor(
-            None, persona_manager.step, str(message.author.id), guild_id, message.content, _call_llm
-        )
+    await handle_user_input(message.author, message.channel, message.content, source="text", announce=False)
 
-    # === 오직 reply만 사용 ===
-    response  = str(result.get("reply", ""))
-    mood      = result.get("mood", "neutral")
-    voice_id  = result.get("voice_id")
-    vts_params= result.get("vts_params", {})
-    print(f"[Persona] mood={mood}, voice={voice_id} | reply={response[:80]}...")
-
-    # 텍스트 채팅: reply만 전송 (2000자 제한 대응)
-    for part in chunk_message(response):
-        await message.channel.send(part)
-
-    # VTS 표정 적용 + 음성으로 reply 말하기
-    ws = None
-    try:
-        ws = await vts_connect_with_token()
-        if ws:
-            await vts_apply_params(ws, vts_params)
-    except Exception as e:
-        # 어떤 이유든 VTS 실패는 무시하고 계속 진행
-        print(f"VTS 사용 안 함(오류 무시): {e}")
-        ws = None
-
-
-    lock = guild_locks[message.guild.id]
-    async with lock:
-        vc = await get_or_connect_voice_client(message)
-        if vc:
-            mp3_bytes = await el_tts_async(response, voice_id)
-            if mp3_bytes:
-                if ws:
-                    # 길이 추정이 어려우니 고정 4초 정도 입모양 시뮬
-                    asyncio.create_task(simulate_mouth(ws, 4.0))
-                await play_mp3_bytes_in_discord(vc, mp3_bytes, volume=1.4)
-                # if vc.is_connected():
-                #     await vc.disconnect()
 
 if __name__ == "__main__":
     print("\nRunning Discord AI VTuber (Persona Mode) ...\n")

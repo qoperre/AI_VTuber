@@ -1,35 +1,41 @@
 # AI-Vtuber
-This code is designed to read chat messages from Discord and then utilize Google's Gemini language model to generate responses. The output from Gemini is then read out loud using a TTS (Text-to-Speech) engine provided by ElevenLabs.
-
+This project reads Discord chat messages, replies with Google's Gemini language model, and now speaks by default through **MeloTTS** (Japanese neural voice) while listening with **OpenAI Whisper** (Korean speech-to-text). When the bot is in a voice channel it can hear participants and answer aloud in real time.
 
 
 # Setup
-Install dependencies
+Install dependencies:
 ```
 git clone https://github.com/Koischizo/AI-Vtuber/
 cd AI-Vtuber
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
-It also requires [`ffmpeg`](https://ffmpeg.org/) to be installed
+
+Additional requirements:
+- [`ffmpeg`](https://ffmpeg.org/) (and `ffprobe`) available on your PATH for playback/transcoding.
+- The first run will download MeloTTS and Whisper models. A CUDA-capable GPU is recommended but not required (set `MELO_TTS_DEVICE`/`WHISPER_DEVICE` to `cpu` for CPU-only).
+
 
 # Usage
+1. Copy `.env` and fill in the values:
+   - `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, `GEMINI_KEY`
+   - Optional tuning: `MELO_TTS_*`, `WHISPER_*`, `VOICE_LISTEN_*`, `VOICE_PLAYBACK_VOLUME`
+2. (Optional) Adjust persona prompts or voice mapping in `persona/configs/rei.json`.
+3. Run the bot:
+   ```
+   python run.py
+   ```
+4. Invite the bot to a text + voice channel, talk or type, and it will respond with Japanese speech synthesized by MeloTTS while transcribing Korean speech via Whisper.
 
-Edit the variables `EL_key`, `GEMINI_key`, `discord_token`, and `discord_channel_id` in `config.json`
+# MeloTTS & Whisper Setup
+1) Install dependencies: `python -m pip install -r requirements.txt`.
+2) The first run downloads MeloTTS and Whisper models automatically. Set `MELO_TTS_DEVICE` / `WHISPER_DEVICE` to `cpu` if you do not have a GPU.
+3) To switch MeloTTS speakers, change `MELO_TTS_SPEAKER` in `.env` or via the GUI.
+4) Whisper defaults to Korean transcription (`WHISPER_LANGUAGE=ko`). Select a smaller model (e.g. `small`, `base`) if `medium` is too heavy.
 
-`EL_key` is the API key for [ElevenLabs](https://beta.elevenlabs.io/). Found in Profile Settings
-
-`GEMINI_key` is the API key for Google's Gemini. Found [here](https://aistudio.google.com/app/apikey)
-
-`discord_token` is your Discord bot's token.
-
-`discord_channel_id` is the ID of the channel you want the bot to read messages from.
-
-Then run `run.py`
-```
-python run.py
-```
-then you're set
-
+# Troubleshooting
+- MeloTTS not installed: ensure `pip install melotts` completed. The first inference downloads model weights; rerun the command if it was interrupted.
+- Whisper GPU memory errors: switch to a smaller model via `WHISPER_MODEL` or set `WHISPER_DEVICE=cpu`.
+- Audio playback issues: confirm `ffmpeg`/`ffprobe` are on PATH and the bot has permission to speak in the voice channel.
 
 # Other
 I used [This VTS plugin](https://lualucky.itch.io/vts-desktop-audio-plugin) and [VB Audio cable](https://vb-audio.com/Cable/) to make her mouth move and be able to play music at the same time

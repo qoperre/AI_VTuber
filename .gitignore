@@ -1,17 +1,116 @@
-# Python
+# =============================
+# 기본 Python / PyTorch
+# =============================
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+*.lib
+*.obj
+*.pdb
 
-# Virtual env
+# =============================
+# 가상환경 / 패키지 관련
+# =============================
+.venv/
 venv/
-.env/
+env/
+ai-vtuber/
+Scripts/
+Lib/
+Include/
+pyvenv.cfg
+conda-meta/
+pkgs/
 
-# IDE
-.vscode/
-.idea/
+# =============================
+# 프로젝트별 AI 모델 및 캐시
+# =============================
 
-# Sensitive files
+# Whisper / HuggingFace 모델 캐시
+~/.cache/
+.cache/
+*.safetensors
+*.pt
+*.bin
+
+# MeloTTS 모델, 다운로드 데이터
+MeloTTS/.cache/
+MeloTTS/checkpoints/
+MeloTTS/models/
+MeloTTS/logs/
+
+# MeCab 사전 및 형태소 데이터
+unidic/
+unidic_lite/
+*.dicdir
+*.mecabrc
+
+# =============================
+# 로그 / 출력 / 임시파일
+# =============================
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Whisper 변환 임시 파일
+whisper_*.wav
+tts_*.wav
+melotts_*.wav
+
+# =============================
+# 메모리 / 세션 / 캐시
+# =============================
+mem/
+memory/
+memory_store.json
+persona/memory_store.json
+persona/configs/memory_*.json
+
+# =============================
+# 환경설정 / 비공개 파일
+# =============================
 .env
-config.json
-discordbot-test/dico_token.py
+*.env
+*.ini
+*.cfg
 vts_token.json
+persona/configs/*.json
+
+# =============================
+# IDE / 에디터 / 시스템 파일
+# =============================
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================
+# 배포/빌드 산출물
+# =============================
+dist/
+build/
+*.egg-info/
+*.egg
+*.spec
+*.manifest
+
+# =============================
+# Jupyter / Notebook
+# =============================
+.ipynb_checkpoints/
+*.ipynb
+
+# =============================
+# Windows / PowerShell 잡파일
+# =============================
+*.ps1
+*.bat
+*.lnk
