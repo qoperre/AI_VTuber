@@ -14,11 +14,7 @@ def run_process(voice_mode: str, line_callback: callable = None):
         process_is_running = True
         try:
             curr_env = os.environ.copy()
-            curr_env["TTS_PROVIDER"] = "MELO"
-            if voice_mode == "MeloTTS (Japanese - Nanami)":
-                curr_env["MELO_TTS_SPEAKER"] = "ja-JP-NanamiNeural"
-            elif voice_mode == "MeloTTS (Japanese - Aoi)":
-                curr_env["MELO_TTS_SPEAKER"] = "ja-JP-AoiNeural"
+            curr_env["TTS_PROVIDER"] = "FISH_SPEECH"
             proc = subprocess.Popen(
                 ["python", "run.py"],
                 stdout=subprocess.PIPE,
@@ -66,8 +62,7 @@ class RunGUI:
         voice_label = ttk.Label(frame, text="Voice Model:")
         voice_label.grid(row=0, column=0, padx=5, pady=5)
         voice_options = [
-            "MeloTTS (Japanese - Nanami)",
-            "MeloTTS (Japanese - Aoi)",
+            "Fish-Speech (Japanese - Girl)",
         ]
         voice_dropdown = ttk.Combobox(frame, values=voice_options, state="readonly")
         voice_dropdown.current(0)

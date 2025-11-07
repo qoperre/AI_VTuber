@@ -16,13 +16,13 @@
     "affinity_bias": 0.002
   },
   "voice_map": {
-    "happy":   {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":1.05},
-    "excited": {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":1.12},
-    "shy":     {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":0.95},
-    "angry":   {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":1.00},
-    "sad":     {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":0.92},
-    "tired":   {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":0.90},
-    "neutral": {"provider":"MELO", "voice_name":"ja-JP-NanamiNeural", "voice_id":"ja-JP-NanamiNeural", "language_code":"JP", "speaking_rate":1.00}
+    "happy":   {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "excited": {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "shy":     {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "angry":   {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "sad":     {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "tired":   {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"},
+    "neutral": {"provider":"FISH_SPEECH", "voice_name":"Japanese (Girl)"}
   },
   "vts_parameters": {
     "happy":   { "MouthSmile": 1.0, "MouthOpen": 0.1, "BrowDownLeft": 0.0 },

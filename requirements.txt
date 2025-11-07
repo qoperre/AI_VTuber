@@ -8,5 +8,8 @@ ffmpeg
 PyNaCl
 openai-whisper
 torch>=2.1.0
-melotts
 numpy
+fish-speech==0.1.0
+huggingface-hub>=0.17.0
+httpx
+ormsgpack

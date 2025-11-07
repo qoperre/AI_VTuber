@@ -32,15 +32,19 @@ This document summarizes key functions, classes, and their responsibilities acro
   - Purpose: Makes sure the voice client is in a good state for playback (nop guard in current form).
 
 - def _normalize_voice_config(voice_cfg: dict) -> dict
-  - Purpose: Normalize persona voice data into MeloTTS speaker/language hints and optional rate/pitch.
+  - Purpose: Normalize persona voice data into Fish-Speech offline parameters (reference folder/files, sampling knobs).
 - def _resolve_device(preferred: str) -> str
-  - Purpose: Decide between GPU/CPU automatically for MeloTTS and Whisper.
-- async def _ensure_melo_model(language_code: str)
-  - Purpose: Lazily load and cache the MeloTTS model on the configured device.
-- async def melo_tts_async(text: str, voice_cfg: dict) -> tuple[bytes, str]|None
-  - Purpose: Synthesize Japanese speech with MeloTTS and return raw audio bytes plus mime type.
+  - Purpose: Decide between GPU/CPU automatically for Whisper model loading.
+- def _collect_fish_references(info: dict) -> list[ServeReferenceAudio]
+  - Purpose: Load reference audio/text pairs from persona config (`reference_files` or `reference_dir`).
+- async def _ensure_fish_engine() -> TTSInferenceEngine
+  - Purpose: Lazily download/load OpenAudio checkpoints and build the Fish-Speech inference engine on the configured device.
+- def _render_wave(audio: np.ndarray, sample_rate: int) -> bytes
+  - Purpose: Convert float PCM into a WAV byte stream for Discord playback.
+- async def fish_speech_async(text: str, voice_cfg: dict) -> tuple[bytes, str]|None
+  - Purpose: Generate speech locally via the Fish-Speech inference engine and return raw WAV bytes plus mime type.
 - async def synthesize_speech_async(message: str, voice_cfg: dict|None) -> tuple[bytes, str]|None
-  - Purpose: High-level TTS entrypoint (currently MeloTTS-first; other providers could be added later).
+  - Purpose: High-level TTS entrypoint (Fish-Speech-first; other providers could be added later).
 - async def _ensure_whisper_model()
   - Purpose: Lazy-load the Whisper model according to .env configuration.
 - async def transcribe_audio_async(audio_bytes: bytes, *, sample_rate=48000, language_code: str|None=None, audio_channel_count: int = 2) -> str
